@@ -16,28 +16,33 @@ SMALL_LIGHT_RADIUS = 800
 Y_TO_REGISTER = 500
 Y_DOWNEST_TO_GET_CREATURE = 9200
 
+
+
 def log(str: str):
     if(DEBUG): print(str, file=sys.stderr, flush=True)
     
 class Zone:
-    def __init__(self, type: int, range_y: Tuple[int, int]):
+    def __init__(self, type: int, range_x: Tuple[int, int], range_y: Tuple[int, int]):
         self.type: int = type
-        self._range_x: Tuple[int, int] = (300, 9750)
+        self._range_x: Tuple[int, int] = range_x
         self._range_y: Tuple[int, int] = range_y
     
     def is_in_zone(self, p: 'Point'):
-        return ((p.coord[0] >= self._range_x[0]) and (p.coord[0] <= self._range_x[1])
+        return (p.coord and
+            (p.coord[0] >= self._range_x[0]) and (p.coord[0] <= self._range_x[1])
                  and (p.coord[1] >= self._range_y[0]) and (p.coord[1] <= self._range_y[1]))
         
-    def go_to_next_in_zone(self, p: 'Point'):
+    def go_to_next_in_zone(self, p: 'Point') -> Optional['Point']:
+        if p.coord is None:
+            return None
+
         if(self.is_in_zone(p)):
             y = self._range_y[0] if(p.coord[1] >= self._range_y[1]) else self._range_y[1]
             x = min(p.coord[0] + BIG_LIGHT_RADIUS, self._range_x[1])
             return Point((x, y))
             
         return Point((self._range_x[0], self._range_y[0]))
-        
-    
+         
     def __str__(self):
         return f"Zone(type={self.type}, range_y={self._range_y})"
 
@@ -60,7 +65,6 @@ class Point:
         if self._coord is not None and other_point.coord is not None:
             return math.sqrt((self._coord[0] - other_point.coord[0]) ** 2 + (self._coord[1] - other_point.coord[1]) ** 2)
         return float('inf')  # Placeholder for handling None or invalid coordinates
-
 
 class Item(Point):
     def __init__(self, item_id: int, coord: Optional[Tuple[int, int]]):
@@ -85,7 +89,6 @@ class Creature(Item):
         self._color = color
         self._type = type
         self._speed = None
-        
         
     def update_with_coordinate(self, coord: Optional[Tuple[int, int]], speed: Optional[Tuple[int, int]]):
         self._coord = coord
@@ -119,16 +122,18 @@ class Creature(Item):
         return f"Creature(id={self._item_id}, coord={self._coord}, color={self._color}, type={self._type}, speed={self._speed})"
     
 class Drone(Item):
-    def __init__(self, id: str):
-        super().__init__(id, None)
-        self._nb_creature_to_register: int = 0
-        self._creature_scanned: List[Creature] = []
+    def __init__(self, id: int, coord: Tuple[int, int],  battery: int, emergency):
+        super().__init__(id, coord)
+        self._battery = battery
+        self._emergency = emergency
         self._target = None
+        self._nb_creature_to_register: int = 0
 
-    def update(self, item_id: str, coord: Optional[Tuple[int, int]], battery: int, emergency):
+    def update(self, item_id: str, coord: Tuple[int, int], battery: int, emergency, nb_creature_to_register):
         super().update(item_id, coord)
         self._battery = battery
         self._emergency = emergency
+        self._nb_creature_to_register = nb_creature_to_register
 
     @property
     def battery(self):
@@ -164,13 +169,6 @@ class Drone(Item):
     def remove_creature_all_to_register(self):
         self._nb_creature_to_register = 0
 
-    def add_creature_to_register(self):
-        self._nb_creature_to_register += 1
-            
-    def add_creature_scanned(self, creature: Creature):
-        if creature not in self._creature_scanned:
-            self._creature_scanned.append(creature)
-
     def __str__(self):
         return f"Drone(id={self._item_id}, coord={self._coord}, battery={self._battery}, emergency={self._emergency})"    
     
@@ -183,27 +181,16 @@ class Drone(Item):
         else:
             log("No target")
 
-        log(f"Creatures To Register: {self._nb_creature_to_register}")            
-        log(f"Creatures Scanned: {self._creature_scanned}")
+        log(f"Creatures To Register: {self._nb_creature_to_register}")
+
         log("===========================")
 
 class MyDrone(Drone):    
-    def __init__(self, id: str):
-        super().__init__(id)
+    def __init__(self, id: int, coord: Tuple[int, int],  battery: int, emergency, zone: List[Zone]):
+        super().__init__(id, coord, battery, emergency)
         self.target = Point((2000, 3750))
-        self._zone_iter = iter([Zone(2,(7500, 9999)), Zone(1,(5000, 7500)), Zone(0,(2500, 5000))])
+        self._zone_iter = iter(zone)
         self._zone = next(self._zone_iter)
-
-    def register_all_creature(self):
-        self.remove_creature_all_to_register()
-
-    def is_type_been_scanned(self, type: int):
-        nb_creature_for_type = 0
-        for creature in self._creature_scanned:
-            if creature.type == type:
-                nb_creature_for_type += 1
-        log(f"========== nb_creature_for_type {nb_creature_for_type} {type}")
-        return nb_creature_for_type >= 4
 
     def get_light(self):
         should_light = self.battery > 10
@@ -226,24 +213,14 @@ class MyDrone(Drone):
         
         return target
 
-    def should_go_up(self):
-        return (self.is_type_been_scanned(self._zone.type) or
-                self._nb_creature_to_register == 12) # TODO en fonction des types de s'ils ont deja ete sauvegarder et sil y a des poissons encore visible ?
+    def go_to_next_zone(self):
+        self._zone = next(self._zone_iter)
 
     def get_up_target(self):
         if self._coord is None:
             return None
         return Point((self._coord[0], Y_TO_REGISTER))
 
-    def find_next_target(self):
-        try:
-            log("==== find next target")
-            if self.is_type_been_scanned(self._zone.type):
-                self._zone = next(self._zone_iter)
-                return self.get_up_target()
-            return self._zone.go_to_next_in_zone(self)
-        except StopIteration:
-            return self.generate_random_target((0, 9500), (2500, 9500))
           
     def is_at_target(self): 
         return (self._target and self._target.coord and self._coord and
@@ -251,7 +228,7 @@ class MyDrone(Drone):
                 self._coord[0] == self._target.coord[0])
 
     def go_to_target(self):
-        if self.target is None:
+        if self.target is None or self.target.coord is None:
             self.wait()
             return
         print(f"MOVE {str(self.target.coord[0])} {str(self.target.coord[1])} {str(self.get_light())}")
@@ -263,59 +240,88 @@ class MyDrone(Drone):
 class GameAction: 
     def __init__(self):
         super()
-        self._creatures: List[Creature] = []
-        self._my_drone: MyDrone = None
-
-    @property
-    def my_drone(self) -> MyDrone:
-        return self._my_drone
-
-    @my_drone.setter
-    def my_drone(self, value: MyDrone):
-        self._my_drone = value
+        self._creatures: List[Creature] = [] #Maybe useless
+        self._my_drones: List[MyDrone] = []
+        self._creature_scanned: List[Creature] = []
+        self.zones = [[Zone(2,(790, 4500), (7500, 9999)), Zone(1,(790, 4500),(5000, 7500)), Zone(0,(790, 4500),(2500, 5000))],
+         [Zone(2,(5000, 9250), (7500, 9999)), Zone(1,(5000, 9250),(5000, 7500)), Zone(0,(5000, 9250),(2500, 5000))]]
     
+    def update_drone(self, drone_id, coord, emergency, battery, nb_creature_to_register ):
+        drone_to_update = self.get_drone(drone_id)
+        if drone_to_update:
+            drone_to_update.update(drone_id, coord, battery, emergency, nb_creature_to_register)
+        else: 
+            self._my_drones.append(MyDrone(drone_id, coord, emergency, battery, self.zones.pop()))
+
     def add_creature(self, creature: Creature): 
         self._creatures.append(creature)
+
+    def get_drone(self, drone_id_to_find: int)-> Optional[MyDrone]:
+        for drone in self._my_drones:
+            if drone.item_id == drone_id_to_find:
+                return drone
+        return None  
 
     def update_creature_by_id(self,creature_id: int, coord: Optional[Tuple[int, int]], speed: Optional[Tuple[int, int]]):
         matching_creature = next((creature for creature in self._creatures if creature.item_id == creature_id), None)
         if matching_creature:
             matching_creature.update_with_coordinate(coord, speed)
-            self._my_drone.add_creature_to_register() #TODO add only if it is this drone which have seen the creature
-            self._my_drone.add_creature_scanned(matching_creature) 
+            self.add_creature_scanned(matching_creature) 
+
+    def is_type_been_scanned(self, type: int):
+        nb_creature_for_type = 0
+        for creature in self._creature_scanned:
+            if creature.type == type:
+                nb_creature_for_type += 1
+        log(f"========== nb_creature_for_type {nb_creature_for_type} {type}")
+        return nb_creature_for_type >= 4
+
+    def add_creature_scanned(self, creature: Creature):
+        if creature not in self._creature_scanned:
+            self._creature_scanned.append(creature)
                         
     def debug_info(self):
         log("==== Debug Info ====")
-        self._my_drone.debug_info()
+        for drone in self._my_drones:
+            drone.debug_info()
 
-        log("Creatures:")
-        for creature in self._creatures:
-            log(f"{creature}")
-
-        if self._my_drone.target:
-            log(f"Target: {self._my_drone.target}")
-        else:
-            log("No target")
+        log(f"Creatures: {self._creatures}")
+        log(f"Creatures Scanned: {self._creature_scanned}")
 
         log("===================")
-        
 
-    def round(self):
-        if DEBUG: self.debug_info()
+    def find_next_target(self, drone: MyDrone):
+        try:
+            if self.is_type_been_scanned(drone._zone.type):
+                drone.go_to_next_zone()
+                return drone.get_up_target()
+            return drone._zone.go_to_next_in_zone(drone)
+        except StopIteration:
+            return drone.generate_random_target((0, 9500), (2500, 9500))
+    
 
-        if(self._my_drone.is_up()): 
-            self._my_drone.register_all_creature()
-            self._my_drone.target = self._my_drone.find_next_target() # or none ?
-        elif(self._my_drone.should_go_up()):
-            self._my_drone.target = self._my_drone.get_up_target()
-        elif(self._my_drone.is_at_target()):
-            self._my_drone.target = self._my_drone.find_next_target()
+    def should_go_up(self, drone: MyDrone):
+        return (self.is_type_been_scanned(drone._zone.type) or
+                self._my_drones[0]._nb_creature_to_register + self._my_drones[1]._nb_creature_to_register == 12) # TODO en fonction des types de s'ils ont deja ete sauvegarder et sil y a des poissons encore visible ?
+   
+
+    def round(self, index: int):
+        # TODO chek if all fish have been scanned in zone
+        drone = self._my_drones[index]
+        if(drone.is_up()): 
+            drone.remove_creature_all_to_register()
+            drone.target = self.find_next_target(drone) # or none ?
+        elif(self.should_go_up(drone)):
+            drone.target = drone.get_up_target()
+        elif(drone.is_at_target()):
+            drone.target = self.find_next_target(drone)
         
         
-        if(self._my_drone.target):
-            self._my_drone.go_to_target()
+        if(drone.target):
+            drone.go_to_target()
         else: 
-            self._my_drone.wait()
+            drone.wait()
+
 
 
 # Score points by scanning valuable fish faster than your opponent.
@@ -342,9 +348,7 @@ while True:
     my_drone_count = int(input())
     for i in range(my_drone_count):
         drone_id, drone_x, drone_y, emergency, battery = [int(j) for j in input().split()]
-        if(game.my_drone is None):
-            game.my_drone = MyDrone(drone_id)
-        game.my_drone.update(drone_id, (drone_x, drone_y), emergency, battery )
+        game.update_drone(drone_id, (drone_x, drone_y), emergency, battery, my_drone_count )
     foe_drone_count = int(input())
     for i in range(foe_drone_count):
         drone_id, drone_x, drone_y, emergency, battery = [int(j) for j in input().split()]
@@ -364,13 +368,13 @@ while True:
         drone_id = int(inputs[0])
         creature_id = int(inputs[1])
         radar = inputs[2]
+    game.debug_info()
     for i in range(my_drone_count):
-
+        game.round(i)
 
         # Write an action using print
         # To debug: print("Debug messages...", file=sys.stderr, flush=True)
-
-        game.round()
+        #game.round()
 
 
 
