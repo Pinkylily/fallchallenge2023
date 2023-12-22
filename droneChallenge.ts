@@ -111,12 +111,11 @@ class Drone {
 }
 
 type Radar = "TR" | "TL" | "BL" | "BR";
-type RadarCreature = { id: number; type: number };
 
 class MyDrone extends Drone {
   public zoneIter: number;
   public zone: Zone;
-  public radarCreature: { [id in Radar]: RadarCreature[] };
+  public radarCreature: { [id in Radar]: number[] };
 
   constructor(
     id: number,
@@ -192,9 +191,7 @@ class MyDrone extends Drone {
         this.radarCreature
       ).reduce(
         (acc: { id: Radar; nbOfType: number }, radar) => {
-          const nbTypeOfZone: number = this.radarCreature[radar].filter(
-            ({ type }) => type === this.zone.type
-          ).length;
+          const nbTypeOfZone: number = this.radarCreature[radar].length;
           if (nbTypeOfZone > acc.nbOfType) {
             return {
               id: radar as Radar,
@@ -325,15 +322,14 @@ while (true) {
     const [droneId, creatureId, radar] = readline().split(" ");
     const creatureIdInt = parseInt(creatureId);
     const droneIdInt = parseInt(droneId);
-    if (!creatureScanned.some(({ id }) => id === creatureIdInt)) {
-      const typeCreature = creatures.find(
-        ({ id }) => creatureIdInt === id
-      )!.type;
-      const drone = myDrones.find(({ id }) => id === droneIdInt);
-      drone?.radarCreature[radar].push({
-        id: creatureIdInt,
-        type: typeCreature,
-      });
+    const drone = myDrones.find(({ id }) => id === droneIdInt);
+    const typeCreature = creatures.find(({ id }) => creatureIdInt === id)!.type;
+    if (
+      !!drone &&
+      !creatureScanned.some(({ id }) => id === creatureIdInt) &&
+      drone.zone.type === typeCreature
+    ) {
+      drone?.radarCreature[radar].push(creatureIdInt);
     }
   }
 
@@ -350,8 +346,12 @@ while (true) {
   for (let i = 0; i < myDroneCount; i++) {
     const drone = myDrones[i];
     const zoneType = drone.zone.type;
-    const isTypeBeenScanned =
-      creatureScanned.filter(({ type }) => type === zoneType).length >= 4;
+    const nbOfTypeToScan = Object.values(drone.radarCreature).reduce(
+      (acc, creatures) => acc + creatures.length,
+      0
+    );
+    console.error("nbOfTypeToScan", nbOfTypeToScan);
+    const isTypeBeenScanned = nbOfTypeToScan <= 0;
 
     const shouldGoUp = isTypeBeenScanned || creatureScanned.length === 12;
     const hasCreatureClosed =
