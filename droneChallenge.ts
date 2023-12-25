@@ -236,6 +236,7 @@ while (true) {
     const creatureId = parseInt(readline());
     if (!creatureScanned.includes(creatureId)) {
       creatureScanned.push(creatureId);
+      console.error("myScan" + creatureId);
     }
   }
 
@@ -279,9 +280,10 @@ while (true) {
     const drone = myDrones.find(({ id }) => id === droneId);
     if (drone) {
       drone.creatureToRegister++;
-    }
-    if (!creatureScanned.includes(creatureId)) {
-      creatureScanned.push(creatureId);
+      if (!creatureScanned.includes(creatureId)) {
+        creatureScanned.push(creatureId);
+        console.error("droneScanCount" + creatureId);
+      }
     }
   }
 
@@ -328,13 +330,18 @@ while (true) {
 
   for (let i = 0; i < myDroneCount; i++) {
     const drone = myDrones[i];
-    const zoneType = drone.zone.type;
     const nbOfTypeToScan = Object.values(drone.radarCreature).reduce(
       (acc, creatures) => acc + creatures.length,
       0
     );
-    console.error("nbOfTypeToScan", nbOfTypeToScan);
+    console.error("type", drone.zone.type, "nbOfTypeToScan", nbOfTypeToScan);
     const isTypeBeenScanned = nbOfTypeToScan <= 0;
+    const monstersInRadius = creatures.filter(
+      (monster) =>
+        monster.type === -1 &&
+        monster.pos &&
+        calculateDistance(monster.pos, drone.pos) <= 1100
+    ); // attention si light = 2000 au tours d'avant alors on peut voir les montres à 2300
 
     const shouldGoUp =
       (isTypeBeenScanned && drone.creatureToRegister > 0) ||
@@ -345,20 +352,20 @@ while (true) {
       ).length > 0;
 
     drone.debugInfo();
-    console.error("zoneType", zoneType);
-    console.error("zoneIter", drone.zoneIter);
+
+    if (isTypeBeenScanned) {
+      const newZone = Math.min(drone.zoneIter + 1, 2);
+      drone.zoneIter = newZone;
+      drone.zone = zones[newZone];
+    }
+
     if (drone.isUp()) {
       console.error("isUp");
-      if (isTypeBeenScanned) {
-        const newZone = Math.min(drone.zoneIter + 1, 2);
-        drone.zoneIter = newZone;
-        drone.zone = zones[newZone];
-      }
       drone.target = drone.findNextTarget();
     } else if (shouldGoUp) {
       console.error("shouldGoUp");
       drone.target = drone.getUpTarget();
-    } else if (drone.isAtTarget()) {
+    } else if (drone.isAtTarget() || isTypeBeenScanned) {
       console.error("isAtTarget");
       drone.target = drone.findNextTarget();
     }
@@ -370,6 +377,19 @@ while (true) {
       !hasCreatureClosed &&
       drone.zone.isInZone(drone.pos, 300);
     const light = shouldLight ? 1 : 0;
+
+    if (drone.target && monstersInRadius.length > 0) {
+      console.error("Monster visible"); //TODO
+      // for now just one monster
+      //const [nextMonsterX, nextMonsterY] =
+      // if (drone.target[1] === Y_TO_REGISTER) {
+      //   // is going up
+      // } else {
+      // is searching next target
+      drone.target = drone.getUpTarget();
+      // }
+    }
+
     if (drone.target) {
       console.log(`MOVE ${drone.target[0]} ${drone.target[1]} ${light}`);
     } else {
