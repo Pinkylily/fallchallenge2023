@@ -42,10 +42,10 @@ class Zone {
     this.rangeY = rangeY;
   }
 
-  isInZone(point: Point) {
+  isInZone(point: Point, delta: number = 0) {
     return (
-      point[0] >= this.rangeX[0] &&
-      point[0] <= this.rangeX[1] &&
+      point[0] >= this.rangeX[0] - delta &&
+      point[0] <= this.rangeX[1] + delta &&
       point[1] >= this.rangeY[0] &&
       point[1] <= this.rangeY[1]
     );
@@ -104,10 +104,6 @@ class Drone {
   isUp(): boolean {
     return this.pos?.[1] <= Y_TO_REGISTER;
   }
-
-  debugInfo() {
-    console.error(`==== Drone ${this.id} Target: ${this.target}`);
-  }
 }
 
 type Radar = "TR" | "TL" | "BL" | "BR";
@@ -116,6 +112,8 @@ class MyDrone extends Drone {
   public zoneIter: number;
   public zone: Zone;
   public radarCreature: { [id in Radar]: number[] };
+  public targetCreatures: number[];
+  public findCreatures: number[];
 
   constructor(
     id: number,
@@ -125,9 +123,11 @@ class MyDrone extends Drone {
     zone: Zone
   ) {
     super(id, pos, battery, emergency);
-    this.target = [2000, 3750];
+    this.target = null;
     this.zoneIter = 0;
     this.zone = zone;
+    this.targetCreatures = [];
+    this.findCreatures = [];
     this.radarCreature = {
       BL: [],
       BR: [],
@@ -140,31 +140,13 @@ class MyDrone extends Drone {
     this.pos = pos;
     this.battery = battery;
     this.emergency = emergency;
+    this.findCreatures = [];
     this.radarCreature = {
       BL: [],
       BR: [],
       TL: [],
       TR: [],
     };
-  }
-
-  generateRandomTarget(rangeX: Point, rangeY: Point): Point {
-    const minDistance = 800;
-
-    let x = Math.floor(Math.random() * (rangeX[1] - rangeX[0] + 1)) + rangeX[0];
-    let y = Math.floor(Math.random() * (rangeY[1] - rangeY[0] + 1)) + rangeY[0];
-    let target: Point = [x, y];
-
-    let distanceToDrone = calculateDistance([x, y], target);
-
-    while (distanceToDrone < minDistance) {
-      x = Math.floor(Math.random() * (rangeX[1] - rangeX[0] + 1)) + rangeX[0];
-      y = Math.floor(Math.random() * (rangeY[1] - rangeY[0] + 1)) + rangeY[0];
-      target = [x, y];
-      distanceToDrone = calculateDistance([x, y], target);
-    }
-
-    return target;
   }
 
   getUpTarget(): Point | null {
@@ -177,31 +159,31 @@ class MyDrone extends Drone {
   isAtTarget(): boolean {
     return (
       !!this.target &&
-      !!this.target[0] &&
       !!this.pos &&
       this.pos[1] === this.target[1] &&
       this.pos[0] === this.target[0]
     );
   }
 
+  getRadarWithMostCreatureOfType(): Radar {
+    return Object.keys(this.radarCreature).reduce(
+      (acc: { id: Radar; nbOfType: number }, radar) => {
+        const nbTypeOfZone: number = this.radarCreature[radar].length;
+        if (nbTypeOfZone > acc.nbOfType) {
+          return {
+            id: radar as Radar,
+            nbOfType: nbTypeOfZone,
+          };
+        }
+        return acc;
+      },
+      { id: "BL", nbOfType: -1 } as { id: Radar; nbOfType: number }
+    ).id;
+  }
+
   findNextTarget(): Point | null {
     if (this.zone.isInZone(this.pos)) {
-      // TODO radar compute
-      const radarWithMostCreatureOfType = Object.keys(
-        this.radarCreature
-      ).reduce(
-        (acc: { id: Radar; nbOfType: number }, radar) => {
-          const nbTypeOfZone: number = this.radarCreature[radar].length;
-          if (nbTypeOfZone > acc.nbOfType) {
-            return {
-              id: radar as Radar,
-              nbOfType: nbTypeOfZone,
-            };
-          }
-          return acc;
-        },
-        { id: "BL", nbOfType: -1 } as { id: Radar; nbOfType: number }
-      ).id;
+      console.error("IS IN ZONE");
 
       const right: Point = [this.zone.rangeX[1], this.pos[1]];
       const left: Point = [this.zone.rangeX[0], this.pos[1]];
@@ -213,13 +195,49 @@ class MyDrone extends Drone {
         TL: [top, left],
         TR: [top, right],
       };
-      return calculateBarycenter(lookUp[radarWithMostCreatureOfType]);
+
+      const isInRight = this.pos[0] + 2000 >= this.zone.rangeX[1];
+      const isInLeft = this.pos[0] - 2000 <= this.zone.rangeX[0];
+
+      let radarToGo;
+      if (isInLeft) {
+        radarToGo =
+          this.radarCreature["BR"].length >= this.radarCreature["TR"].length
+            ? "BR"
+            : "TR";
+      } else if (isInRight) {
+        radarToGo =
+          this.radarCreature["BL"].length >= this.radarCreature["TL"].length
+            ? "BL"
+            : "TL";
+      } else {
+        radarToGo = this.getRadarWithMostCreatureOfType();
+      }
+
+      this.targetCreatures = [...this.radarCreature[radarToGo]];
+      if (this.radarCreature[radarToGo].length > 0) {
+        return calculateBarycenter(lookUp[radarToGo]);
+      }
+
+      if (this.zone.type === 2) {
+        radarToGo = this.getRadarWithMostCreatureOfType();
+        return calculateBarycenter(lookUp[radarToGo]);
+      }
+
+      if (this.findCreatures.length > 2) {
+        return this.getUpTarget();
+      }
+
+      return null;
     }
 
-    const isInLeft = this.pos[0] < 5000;
-    const x = isInLeft ? this.zone.rangeX[0] : this.zone.rangeX[1];
+    return [this.pos[0], this.zone.rangeY[0]];
+  }
 
-    return [x, this.zone.rangeY[0]];
+  debugInfo() {
+    console.error(
+      `==== Drone ${this.id} Target: ${this.target} findCreatures=${this.findCreatures}`
+    );
   }
 }
 
@@ -227,9 +245,16 @@ const creatures: Creature[] = [];
 const myDrones: MyDrone[] = [];
 const creatureScanned: Creature[] = [];
 const zones = [
-  new Zone(0, [790, 9250], [2500, 5000]),
-  new Zone(1, [790, 9250], [5000, 7500]),
-  new Zone(2, [790, 9250], [7500, 9200]),
+  [
+    new Zone(0, [790, 5000], [2500, 5000]),
+    new Zone(1, [790, 5000], [5000, 7500]),
+    new Zone(2, [790, 9250], [7500, 9200]),
+  ],
+  [
+    new Zone(0, [5200, 9250], [2500, 5000]),
+    new Zone(1, [5200, 9250], [5000, 7500]),
+    new Zone(2, [790, 9250], [7500, 9200]),
+  ],
 ];
 
 // @ts-ignore
@@ -271,7 +296,7 @@ while (true) {
       myDrones[i].update([droneX, droneY], battery, emergency);
     } else {
       myDrones.push(
-        new MyDrone(droneId, [droneX, droneY], battery, emergency, zones[0])
+        new MyDrone(droneId, [droneX, droneY], battery, emergency, zones[i][0])
       );
     }
   }
@@ -290,6 +315,7 @@ while (true) {
   for (let i = 0; i < droneScanCount; i++) {
     // @ts-ignore
     const [droneId, creatureId] = readline().split(" ").map(Number);
+    myDrones.find(({ id }) => id === droneId)?.findCreatures.push(creatureId);
   }
 
   // @ts-ignore
@@ -350,14 +376,23 @@ while (true) {
       (acc, creatures) => acc + creatures.length,
       0
     );
-    console.error("nbOfTypeToScan", nbOfTypeToScan);
     const isTypeBeenScanned = nbOfTypeToScan <= 0;
+    const monstersInRadius = creatureScanned.filter(
+      (monster) =>
+        monster.type === -1 &&
+        monster.pos &&
+        calculateDistance(monster.pos, drone.pos) <= 1100
+    ); // attention si light = 2000 au tours d'avant alors on peut voir les montres à 2300
 
-    const shouldGoUp = isTypeBeenScanned || creatureScanned.length === 12;
+    const shouldGoUp = isTypeBeenScanned || (myScanCount + droneScanCount) === 12;
     const hasCreatureClosed =
       creatureScanned.filter(
-        ({ pos }) => !!pos && calculateDistance(pos, drone.pos) <= 800
+        ({ pos, type }) =>
+          !!pos && calculateDistance(pos, drone.pos) <= 800 && type >= 0
       ).length > 0;
+    const haveScannedTargetCreatures = creatureScanned.filter(({ id }) =>
+      drone.targetCreatures.includes(id)
+    );
 
     drone.debugInfo();
     console.error("zoneType", zoneType);
@@ -367,26 +402,45 @@ while (true) {
       if (isTypeBeenScanned) {
         const newZone = Math.min(drone.zoneIter + 1, 2);
         drone.zoneIter = newZone;
-        drone.zone = zones[newZone];
+        drone.zone = zones[i][newZone];
       }
       drone.target = drone.findNextTarget();
     } else if (shouldGoUp) {
       console.error("shouldGoUp");
       drone.target = drone.getUpTarget();
-    } else if (drone.isAtTarget()) {
+    } else if (drone.isAtTarget() || haveScannedTargetCreatures) {
       console.error("isAtTarget");
       drone.target = drone.findNextTarget();
     }
 
+    if (drone.target === null) {
+      const newZone = Math.min(drone.zoneIter + 1, 2);
+      drone.zoneIter = newZone;
+      drone.zone = zones[i][newZone];
+      drone.target = drone.findNextTarget();
+    }
+
     drone.debugInfo();
-    console.error("hasCreatureClosed", hasCreatureClosed);
+
     const shouldLight =
       drone.battery >= 10 &&
       !hasCreatureClosed &&
-      drone.zone.isInZone(drone.pos);
+      drone.zone.isInZone(drone.pos, 300);
     const light = shouldLight ? 1 : 0;
     if (drone.target) {
-      console.log(`MOVE ${drone.target[0]} ${drone.target[1]} ${light}`);
+      if (monstersInRadius.length > 0) {
+        console.error("Monster visible"); //TODO
+        // for now just one monster
+        //const [nextMonsterX, nextMonsterY] =
+        if (drone.target[1] === Y_TO_REGISTER) {
+          // is going up
+        } else {
+          // is searching next target
+          drone.target = drone.getUpTarget();
+        }
+      } else {
+        console.log(`MOVE ${drone.target[0]} ${drone.target[1]} ${light}`);
+      }
     } else {
       console.log(`WAIT ${light}`);
     }
