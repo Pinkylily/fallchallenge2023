@@ -133,7 +133,6 @@ class MyDrone {
     this.battery = battery;
     this.emergency = emergency;
     this.target = null;
-    this.target = null;
     this.creatureTarget = [];
     this.zoneIter = 0;
     this.zone = zone;
@@ -171,9 +170,8 @@ class MyDrone {
   }
 
   debugInfo() {
-    console.error(
-      `==== Drone ${this.id} Target: ${this.target} Creature target ${this.creatureTarget}`
-    );
+    console.error(`==== Drone ${this.id} Target: ${this.target}`);
+    console.error("creatureTarget", this.creatureTarget);
   }
 
   getUpTarget(): Point | null {
@@ -186,7 +184,6 @@ class MyDrone {
 
   isAtTarget(): boolean {
     this.creatureTarget = [];
-    console.error(`is At target target ${this.target}`);
     return (
       !!this.target &&
       !!this.pos &&
@@ -196,37 +193,15 @@ class MyDrone {
   }
 
   findNextTarget(): Point | null {
-    let radarToGo: Radar | null = null;
-    let zoneType = this.zone.type - 1;
-
-    if (this.creatureTarget.length > 0) {
-      radarToGo = (Object.keys(this.radarCreature) as Radar[]).reduce<{
-        id: Radar | null;
-        nbTarget: number;
-      }>(
-        (acc, radar: Radar) => {
-          const nbTarget: number = this.radarCreature[radar].filter(({ id }) =>
-            this.creatureTarget.includes(id)
-          ).length;
-          if (nbTarget > acc.nbTarget) {
-            return { id: radar, nbTarget };
-          }
-          return acc;
-        },
-        {
-          id: null,
-          nbTarget: 0,
-        }
-      ).id;
-
-      if (radarToGo !== null) {
-        zoneType = this.radarCreature[radarToGo].reduce<number>(
-          (acc, { type }) => (type < acc ? type : acc),
-          2
-        );
-      }
+    if (this.pos[1] < 2500) {
+      const isInLeft = this.pos[0] < 5000;
+      const x = isInLeft ? this.zone.rangeX[0] : this.zone.rangeX[1];
+      return [x, this.zone.rangeY[0]];
     }
 
+    let radarToGo: Radar | null = null;
+    let zoneType = this.zone.type - 1;
+    
     while (zoneType < 2 && radarToGo === null) {
       //find radar with most creature and lenght > 0
       zoneType++;
@@ -256,15 +231,18 @@ class MyDrone {
     console.error(`drone ${this.id}, radar: ${JSON.stringify(radarToGo)}}`);
 
     if (radarToGo !== null) {
-      const [ux, uy] = vectorForRadar[radarToGo];
       this.creatureTarget = this.radarCreature[radarToGo].map(({ id }) => id);
-
-      console.error(`zoneType ${zoneType} ${this.zone.type}`);
-
-      return zones[zoneType].computePointInZone([
-        this.pos[0] + ux * 600,
-        this.pos[1] + uy * 600,
-      ]);
+      const right: Point = [this.zone.rangeX[1], this.pos[1]];
+      const left: Point = [this.zone.rangeX[0], this.pos[1]];
+      const top: Point = [this.pos[0], this.zone.rangeY[0]];
+      const bottom: Point = [this.pos[0], this.zone.rangeY[1]];
+      const lookUp: Record<Radar, Point[]> = {
+        BL: [bottom, left],
+        BR: [bottom, right],
+        TL: [top, left],
+        TR: [top, right],
+      };
+      return calculateBarycenter(lookUp[radarToGo]);
     }
 
     return null;
@@ -404,7 +382,9 @@ while (true) {
       if (creatureScannedByFoe.includes(creatureIdInt)) {
         value = 2;
       } else if (otherDrone.creatureTarget.includes(creatureIdInt)) {
-        value = 1;
+        value--;
+      } else if (drone.creatureTarget.includes(creatureIdInt)) {
+        value = 4;
       }
       const creatureInfo: CreatureInfo = {
         id: creatureIdInt,
@@ -456,13 +436,12 @@ while (true) {
       drone.target = drone.findNextTarget();
     } else if (shouldGoUp) {
       console.error("shouldGoUp");
-      console.error(
-        `first ${isTypeBeenScanned && drone.creatureToRegister > 0}`
-      );
-      console.error(` second ${creatureScanned.length === 12}`);
-      console.error(` creatureScanned ${creatureScanned.length}`);
       drone.target = drone.getUpTarget();
-    } else if (drone.isAtTarget() || isTypeBeenScanned) {
+    } else if (
+      drone.isAtTarget() ||
+      isTypeBeenScanned ||
+      (drone.target && drone.target[1] >= 2500 && drone.creatureTarget.length === 0)
+    ) {
       console.error("isAtTarget");
       drone.target = drone.findNextTarget();
     }
