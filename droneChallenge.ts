@@ -4,12 +4,11 @@ const BIG_LIGHT_RADIUS = 2000;
 const SMALL_LIGHT_RADIUS = 800;
 const Y_TO_REGISTER = 500;
 const Y_DOWNEST_TO_GET_CREATURE = 9200;
-const vectorForRadar: Record<Radar, Point> = {
-  BL: [-1, 1],
-  BR: [1, 1],
-  TL: [-1, -1],
-  TR: [1, -1],
-};
+const RADIUS_COLLISION = 500;
+const MIN_BORDER_MAP = 0;
+const MAX_BORDER_MAP = 10000;
+
+// seed monster down seed=-5177691760985842000
 
 function calculateDistance(point1: Point, point2: Point) {
   const dx = point1[0] - point2[0];
@@ -29,8 +28,8 @@ function calculateBarycenter(points: Point[]): Point | null {
   const sumY = points.reduce((acc, point) => acc + point[1], 0);
 
   // Calculate the average coordinates
-  const centerX = Math.floor(sumX / totalPoints);
-  const centerY = Math.floor(sumY / totalPoints);
+  const centerX = Math.round(sumX / totalPoints);
+  const centerY = Math.round(sumY / totalPoints);
 
   return [centerX, centerY];
 }
@@ -41,44 +40,21 @@ function createVectorFromPoints(point1: Point, point2: Point) {
   return [x, y];
 }
 
-type Radar = "TR" | "TL" | "BL" | "BR";
-type CreatureInfo = { id: number; value: number; type: number };
-type CreatureInfoByRadar = { [id in Radar]: CreatureInfo[] };
-
-type Point = [number, number];
-
-class Zone {
-  public rangeX: Point;
-  public rangeY: Point;
-  public type: number;
-  public haveCreatures: boolean;
-
-  constructor(type: number, rangeX: Point, rangeY: Point) {
-    this.type = type;
-    this.rangeX = rangeX;
-    this.rangeY = rangeY;
-    this.haveCreatures = false;
-  }
-
-  isInZone(point: Point, delta: number = 0) {
-    return (
-      point[0] >= this.rangeX[0] - delta &&
-      point[0] <= this.rangeX[1] + delta &&
-      point[1] >= this.rangeY[0] &&
-      point[1] <= this.rangeY[1]
-    );
-  }
-
-  computePointInZone(point: Point): Point {
-    const x = Math.min(Math.max(point[0], this.rangeX[0]), this.rangeX[1]);
-    const y = Math.min(Math.max(point[1], this.rangeY[0]), this.rangeY[1]);
-    return [x, y];
-  }
-
-  toString() {
-    return `Zone(type=${this.type}, rangeY=${this.rangeY})`;
-  }
+function inRange(p1: Point, p2: Point, radius: number) {
+  const [x, y] = p1;
+  const [x2, y2] = p2;
+  return (x2 - x) * (x2 - x) + (y2 - y) * (y2 - y) <= radius * radius;
 }
+
+type Radar = "TR" | "TL" | "BL" | "BR";
+type CreatureStatus = "registered" | "scanned" | "deleted" | "available";
+type CreatureInfo = {
+  id: number;
+  type: number;
+  pos: Point;
+  droneClosest: number;
+};
+type Point = [number, number];
 
 class Creature {
   public id: number;
@@ -86,79 +62,190 @@ class Creature {
   public type: number;
   public speed: Point | null;
   public pos: Point | null;
+  public status: CreatureStatus;
+  public isScannedByFoe: boolean;
+  private rangeX: Point;
+  private rangeY: Point;
+
   constructor(id: number, color: number, type: number) {
     this.id = id;
     this.color = color;
     this.type = type;
     this.speed = null;
     this.pos = null;
+    this.rangeX = [MIN_BORDER_MAP, MAX_BORDER_MAP];
+    this.rangeY = Game.rangeY[type];
   }
 
   updateWithCoordinate(pos: Point, speed) {
     this.pos = pos;
     this.speed = speed;
   }
+
+  updateZone(posDrone: Point, radar: string) {
+    const [x, y] = posDrone;
+    const isInTop = radar.includes("T");
+    const isInLeft = radar.includes("L");
+
+    const [xmin, xmax] = this.rangeX;
+    const [ymin, ymax] = this.rangeY;
+    if (isInLeft) {
+      this.rangeX[1] = Math.min(xmax, x);
+    } else {
+      this.rangeX[0] = Math.max(xmin, x);
+    }
+
+    if (isInTop) {
+      // ymax = min(ymax, yDrone)
+      this.rangeY[1] = Math.min(ymax, y);
+    } else {
+      // ymin = max(ymin, yDrone)
+      this.rangeY[0] = Math.max(ymin, y);
+    }
+  }
+
+  getEstimatedPosition(): Point {
+    if (this.pos) {
+      return this.pos;
+    }
+
+    // compute barycentre
+    const [xmin, xmax] = this.rangeX;
+    const [ymin, ymax] = this.rangeY;
+
+    const centerX = Math.round((xmin + xmax) / 2);
+    const centerY = Math.round((ymin + ymax) / 2);
+
+    return [centerX, centerY];
+  }
+
+  willCollide(point: Point, [vx, vy]: Point) {
+    if (!this.pos || !this.speed) return false;
+
+    if (inRange(this.pos, point, RADIUS_COLLISION)) {
+      return true;
+    }
+
+    // Change referencial
+    const [x, y] = this.pos;
+    const [ux, uy] = point;
+
+    const x2 = x - ux;
+    const y2 = y - uy;
+    const vx2 = this.speed[0] - vx;
+    const vy2 = this.speed[1] - vy;
+
+    // Resolving: sqrt((x + t*vx)^2 + (y + t*vy)^2) = radius <=> t^2*(vx^2 + vy^2) + t*2*(x*vx + y*vy) + x^2 + y^2 - radius^2 = 0
+    // at^2 + bt + c = 0;
+    // a = vx^2 + vy^2
+    // b = 2*(x*vx + y*vy)
+    // c = x^2 + y^2 - radius^2
+
+    const a = vx2 * vx2 + vy2 * vy2;
+
+    if (a <= 0.0) {
+      return false;
+    }
+
+    const b = 2.0 * (x2 * vx2 + y2 * vy2);
+    const c = x2 * x2 + y2 * y2 - RADIUS_COLLISION * RADIUS_COLLISION;
+    const delta = b * b - 4.0 * a * c;
+
+    if (delta < 0.0) {
+      return false;
+    }
+
+    const t = (-b - Math.sqrt(delta)) / (2.0 * a);
+
+    if (t <= 0.0) {
+      return false;
+    }
+
+    if (t > 1.0) {
+      return false;
+    }
+  }
 }
 
-const creatures: Creature[] = [];
-const myDrones: MyDrone[] = [];
-const creatureScannedByFoe: number[] = [];
-const zones = [
-  new Zone(0, [790, 9250], [2500, 5000]),
-  new Zone(1, [790, 9250], [5000, 7500]),
-  new Zone(2, [790, 9250], [7500, 9200]),
-];
+interface IGame {
+  type: number;
+  rangeY: Point[];
+  fishes: Creature[];
+  monsters: Creature[];
+  myDrones: Drone[];
+}
 
-class MyDrone {
-  public zoneIter: number;
-  public zone: Zone;
-  public radarCreature: CreatureInfoByRadar;
-  public creatureTarget: number[];
+const Game: IGame = {
+  type: 0,
+  rangeY: [
+    [2500, 5000],
+    [5000, 7500],
+    [7500, 10000],
+  ],
+  fishes: [],
+  monsters: [],
+  myDrones: [],
+};
+
+class Drone {
   public id: number;
   public pos: Point;
   public battery: number;
   public emergency: number;
   public target: Point | null;
-  public creatureToRegister: number;
+  public nbScanToRegister: number;
+  public coolDownLight: number;
+  public creatureTargets: number[];
+  public type: number;
 
-  constructor(
-    id: number,
-    pos: Point,
-    battery: number,
-    emergency: number,
-    zone: Zone
-  ) {
+  constructor(id: number, pos: Point, battery: number, emergency: number) {
     this.id = id;
     this.pos = pos;
     this.battery = battery;
     this.emergency = emergency;
     this.target = null;
-    this.creatureTarget = [];
-    this.zoneIter = 0;
-    this.zone = zone;
-    this.radarCreature = {
-      BL: [],
-      BR: [],
-      TL: [],
-      TR: [],
-    };
+    this.creatureTargets = [];
+    this.coolDownLight = 2;
+    this.type = 0;
   }
 
   update(pos: Point, battery: number, emergency: number) {
     this.pos = pos;
     this.battery = battery;
     this.emergency = emergency;
-    this.creatureToRegister = 0;
-    this.radarCreature = {
-      BL: [],
-      BR: [],
-      TL: [],
-      TR: [],
-    };
+    this.nbScanToRegister = 0;
 
     if (emergency === 1) {
-      this.creatureTarget = [];
+      this.creatureTargets = [];
     }
+  }
+
+  getLight(hasCreatureClosed: boolean): number {
+    const isAroundCreatureTarget = this.creatureTargets.some((creatureId) => {
+      const matchingCreature = Game.fishes.find(({ id }) => id === creatureId);
+      if (matchingCreature) {
+        return (
+          calculateDistance(
+            matchingCreature.getEstimatedPosition(),
+            this.pos
+          ) <= BIG_LIGHT_RADIUS
+        );
+      }
+      return false;
+    });
+
+    const shouldLight =
+      this.battery >= 5 &&
+      !hasCreatureClosed &&
+      this.coolDownLight <= 0 &&
+      isAroundCreatureTarget;
+
+    if (shouldLight) {
+      this.coolDownLight = 2;
+    } else {
+      this.coolDownLight--;
+    }
+    return shouldLight ? 1 : 0;
   }
 
   isDown(): boolean {
@@ -171,19 +258,21 @@ class MyDrone {
 
   debugInfo() {
     console.error(`==== Drone ${this.id} Target: ${this.target}`);
-    console.error("creatureTarget", this.creatureTarget);
+    console.error("creatureTarget", this.creatureTargets);
+  }
+
+  isGoingUp() {
+    return this.target && this.target[1] === Y_TO_REGISTER;
   }
 
   getUpTarget(): Point | null {
     if (!this.pos) {
       return null;
     }
-    this.creatureTarget = [];
     return [this.pos[0], Y_TO_REGISTER];
   }
 
   isAtTarget(): boolean {
-    this.creatureTarget = [];
     return (
       !!this.target &&
       !!this.pos &&
@@ -192,57 +281,29 @@ class MyDrone {
     );
   }
 
+  getNextPosition(): Point {
+    if (this.target === null) {
+      throw Error("TARGET SHOULD NOT BE NULL");
+    }
+
+    const distanceToTarget = calculateDistance(this.pos, this.target);
+    if (distanceToTarget > 600) {
+      const [vx, vy] = createVectorFromPoints(this.pos, this.target);
+      const [ux, uy] = [vx / distanceToTarget, vy / distanceToTarget];
+      return [
+        Math.round(this.pos[0] + ux * 600),
+        Math.round(this.pos[1] + uy * 600),
+      ];
+    }
+    return this.target;
+  }
+
   findNextTarget(): Point | null {
-    if (this.pos[1] < 2500) {
-      const isInLeft = this.pos[0] < 5000;
-      const x = isInLeft ? this.zone.rangeX[0] : this.zone.rangeX[1];
-      return [x, this.zone.rangeY[0]];
-    }
-
-    let radarToGo: Radar | null = null;
-    let zoneType = this.zone.type - 1;
-    
-    while (zoneType < 2 && radarToGo === null) {
-      //find radar with most creature and lenght > 0
-      zoneType++;
-      const radars = (Object.keys(this.radarCreature) as Radar[]).reduce<{
-        id: Radar | null;
-        valueMax: number;
-      }>(
-        (acc, radar) => {
-          const value: number = this.radarCreature[radar].reduce<number>(
-            (acc, { type, value }) => (type === zoneType ? acc + value : acc),
-            0
-          );
-          if (value > acc.valueMax) {
-            return { id: radar, valueMax: value };
-          }
-          return acc;
-        },
-        {
-          id: null,
-          valueMax: 0,
-        }
+    if (this.creatureTargets.length > 0) {
+      const positions = this.creatureTargets.map((id) =>
+        Game.fishes.find((c) => c.id === id)!.getEstimatedPosition()
       );
-
-      radarToGo = radars.id;
-    }
-
-    console.error(`drone ${this.id}, radar: ${JSON.stringify(radarToGo)}}`);
-
-    if (radarToGo !== null) {
-      this.creatureTarget = this.radarCreature[radarToGo].map(({ id }) => id);
-      const right: Point = [this.zone.rangeX[1], this.pos[1]];
-      const left: Point = [this.zone.rangeX[0], this.pos[1]];
-      const top: Point = [this.pos[0], this.zone.rangeY[0]];
-      const bottom: Point = [this.pos[0], this.zone.rangeY[1]];
-      const lookUp: Record<Radar, Point[]> = {
-        BL: [bottom, left],
-        BR: [bottom, right],
-        TL: [top, left],
-        TR: [top, right],
-      };
-      return calculateBarycenter(lookUp[radarToGo]);
+      return calculateBarycenter(positions);
     }
 
     return null;
@@ -254,24 +315,33 @@ const creatureCount = parseInt(readline());
 for (let i = 0; i < creatureCount; i++) {
   // @ts-ignore
   const [creatureId, color, type] = readline().split(" ").map(Number);
-  creatures.push(new Creature(creatureId, color, type));
+  const creature = new Creature(creatureId, color, type);
+  if (type === -1) {
+    Game.monsters.push(creature);
+  } else {
+    Game.fishes.push(creature);
+  }
 }
 
 while (true) {
-  const creatureScanned: number[] = [];
   // @ts-ignore
   const myScore = parseInt(readline());
   // @ts-ignore
   const foeScore = parseInt(readline());
   // @ts-ignore
   const myScanCount = parseInt(readline());
-  zones.forEach((zone) => (zone.haveCreatures = false));
+
+  // init round
+  Game.fishes.forEach((c) => {
+    c.status = "deleted";
+  });
 
   for (let i = 0; i < myScanCount; i++) {
     // @ts-ignore
     const creatureId = parseInt(readline());
-    if (!creatureScanned.includes(creatureId)) {
-      creatureScanned.push(creatureId);
+    const matchingCreature = Game.fishes.find(({ id }) => id === creatureId);
+    if (matchingCreature) {
+      matchingCreature.status = "registered";
     }
   }
 
@@ -280,8 +350,9 @@ while (true) {
   for (let i = 0; i < foeScanCount; i++) {
     // @ts-ignore
     const creatureId = parseInt(readline());
-    if (!creatureScannedByFoe.includes(creatureId)) {
-      creatureScannedByFoe.push(creatureId);
+    const matchingCreature = Game.fishes.find(({ id }) => id === creatureId);
+    if (matchingCreature) {
+      matchingCreature.isScannedByFoe = true;
     }
   }
 
@@ -292,11 +363,11 @@ while (true) {
     const [droneId, droneX, droneY, emergency, battery] = readline()
       .split(" ")
       .map(Number);
-    if (myDrones.length >= myDroneCount) {
-      myDrones[i].update([droneX, droneY], battery, emergency);
+    if (Game.myDrones.length >= myDroneCount) {
+      Game.myDrones[i].update([droneX, droneY], battery, emergency);
     } else {
-      myDrones.push(
-        new MyDrone(droneId, [droneX, droneY], battery, emergency, zones[0])
+      Game.myDrones.push(
+        new Drone(droneId, [droneX, droneY], battery, emergency)
       );
     }
   }
@@ -315,12 +386,20 @@ while (true) {
   for (let i = 0; i < droneScanCount; i++) {
     // @ts-ignore
     const [droneId, creatureId] = readline().split(" ").map(Number);
-    const drone = myDrones.find(({ id }) => id === droneId);
+    const drone = Game.myDrones.find(({ id }) => id === droneId);
+
     if (drone) {
-      drone.creatureToRegister++;
-      if (!creatureScanned.includes(creatureId)) {
-        creatureScanned.push(creatureId);
+      drone.nbScanToRegister++;
+
+      const matchingCreature = Game.fishes.find(({ id }) => id === creatureId);
+      if (matchingCreature) {
+        matchingCreature.status = "scanned";
       }
+
+      // clean already scanned target
+      drone.creatureTargets = drone.creatureTargets.filter(
+        (id) => creatureId !== id
+      );
     }
   }
 
@@ -330,7 +409,7 @@ while (true) {
     const [creatureId, creatureX, creatureY, creatureVX, creatureVY] = // @ts-ignore
       readline().split(" ").map(Number);
 
-    const matchingCreature = creatures.find(
+    const matchingCreature = Game.fishes.find(
       (creature) => creature.id === creatureId
     );
     if (matchingCreature) {
@@ -341,13 +420,7 @@ while (true) {
     }
   }
 
-  // clean already scanned target
-  myDrones.forEach((drone) => {
-    drone.creatureTarget = drone.creatureTarget.filter(
-      (id) => !creatureScanned.includes(id)
-    );
-  });
-
+  // ============== RADAR LOOP ============
   // @ts-ignore
   const radarBlipCount = parseInt(readline());
   for (let i = 0; i < radarBlipCount; i++) {
@@ -355,126 +428,113 @@ while (true) {
     const [droneId, creatureId, radar] = readline().split(" ");
     const creatureIdInt = parseInt(creatureId);
     const droneIdInt = parseInt(droneId);
-    const { drone, otherDrone } = myDrones.reduce<{
-      drone: MyDrone | null;
-      otherDrone: MyDrone | null;
-    }>(
-      (acc, drone) => {
-        drone.id === droneIdInt
-          ? (acc.drone = drone)
-          : (acc.otherDrone = drone);
-        return acc;
-      },
-      { drone: null, otherDrone: null }
-    );
-    const typeCreature = creatures.find(({ id }) => creatureIdInt === id)!.type;
+    const matchingCreature = Game.fishes.find(({ id }) => creatureIdInt === id);
+    const drone = Game.myDrones.find(({ id }) => id === droneIdInt);
 
-    if (
-      !!drone &&
-      !!otherDrone &&
-      !creatureScanned.includes(creatureIdInt) &&
-      typeCreature >= 0
-    ) {
-      if (typeCreature === drone.zone.type && !drone.zone.haveCreatures) {
-        drone.zone.haveCreatures = true;
+    if (matchingCreature && drone) {
+      if (matchingCreature.status === "deleted") {
+        matchingCreature.status = "available";
       }
-      let value = 3;
-      if (creatureScannedByFoe.includes(creatureIdInt)) {
-        value = 2;
-      } else if (otherDrone.creatureTarget.includes(creatureIdInt)) {
-        value--;
-      } else if (drone.creatureTarget.includes(creatureIdInt)) {
-        value = 4;
-      }
-      const creatureInfo: CreatureInfo = {
-        id: creatureIdInt,
-        value,
-        type: typeCreature,
-      };
-      drone?.radarCreature[radar].push(creatureInfo);
+      matchingCreature.updateZone(drone.pos, radar);
     }
   }
 
-  for (let i = 0; i < myDroneCount; i++) {
-    const drone = myDrones[i];
-    const isTypeBeenScanned = !drone.zone.haveCreatures;
-    console.error(`${drone.zone.type} isTypeBeenScanned ${isTypeBeenScanned}`);
-    const monstersInRadius = creatures.filter(
-      (monster) =>
-        monster.type === -1 &&
-        monster.pos &&
-        calculateDistance(monster.pos, drone.pos) <= 1100
-    ); // attention si light = 2000 au tours d'avant alors on peut voir les montres à 2300
-
-    const shouldGoUp =
-      (isTypeBeenScanned && drone.creatureToRegister > 0) ||
-      creatureScanned.length === 12;
-    const hasCreatureClosed =
-      creatures.filter(
-        ({ pos }) => !!pos && calculateDistance(pos, drone.pos) <= 800
-      ).length > 0;
-
-    if (isTypeBeenScanned) {
-      const newZone = Math.min(drone.zoneIter + 1, 2);
-      drone.zoneIter = newZone;
-      drone.zone = zones[newZone];
-    }
-
-    if (i === 1) {
-      const otherDroneTarget = myDrones[0].creatureTarget;
-      if (otherDroneTarget.length > 0) {
-        (Object.keys(drone.radarCreature) as Radar[]).forEach((radar) => {
-          drone.radarCreature[radar] = drone.radarCreature[radar].map((c) =>
-            otherDroneTarget.includes(c.id) ? { ...c, value: 1 } : c
-          );
+  let targetsAvailable = Game.fishes
+    .reduce<CreatureInfo[]>((acc, creature) => {
+      if (creature.status === "available") {
+        const pos = creature.getEstimatedPosition();
+        const droneClosest =
+          calculateDistance(Game.myDrones[0].pos, pos) <
+          calculateDistance(Game.myDrones[1].pos, pos)
+            ? Game.myDrones[0].id
+            : Game.myDrones[1].id;
+        acc.push({
+          id: creature.id,
+          type: creature.type,
+          droneClosest,
+          pos,
         });
       }
-    }
+      return acc;
+    }, [])
+    .sort((a, b) => a.pos[0] - b.pos[0])
+    .sort((a, b) => a.droneClosest - b.droneClosest)
+    .sort((a, b) => a.type - b.type);
 
-    if (drone.isUp()) {
-      console.error("isUp");
-      drone.target = drone.findNextTarget();
-    } else if (shouldGoUp) {
+  console.error(
+    `targetsAvailable ${JSON.stringify(targetsAvailable, null, 2)}`
+  );
+
+  for (let i = 0; i < myDroneCount; i++) {
+    const drone = Game.myDrones[i];
+    const monstersInRadius = Game.monsters.filter((monster) => !!monster.pos);
+    drone.creatureTargets = [];
+    let type = Game.type;
+
+    while (type <= 2 && drone.creatureTargets.length === 0) {
+      const targetsForType = targetsAvailable.filter((t) => t.type === type);
+      const maxCreatureForDrone = Math.round(
+        Game.fishes.filter(
+          (f) => f.status === "available" && f.type === Game.type
+        ).length / 2
+      );
+      while (
+        drone.creatureTargets.length < maxCreatureForDrone &&
+        targetsForType.length > 0
+      ) {
+        // TODO refaire
+
+        const targetForDrone = targetsForType.shift();
+        if (targetForDrone) {
+          drone.creatureTargets.push(targetForDrone.id);
+        }
+      }
+      type++;
+    }
+    targetsAvailable = targetsAvailable.filter(
+      (t) => !drone.creatureTargets.includes(t.id)
+    );
+
+    const isTypeBeenScanned =
+      Game.fishes.filter(
+        (f) => f.status === "available" && f.type === Game.type
+      ).length === 0;
+    const shouldGoUp =
+      isTypeBeenScanned && drone.nbScanToRegister > 0 && Game.type >= 1; // TODO ESTIMATED SCORE 64 and some drone doesn't go up
+    if (isTypeBeenScanned) {
+      Game.type = Game.type + 1;
+      console.error("isTypeBeenScanned change to type", Game.type);
+    }
+    const hasCreatureClosed = Game.fishes.some(
+      ({ pos }) => !!pos && calculateDistance(pos, drone.pos) <= 800
+    );
+
+    if (shouldGoUp || (drone.isGoingUp() && !drone.isUp())) {
       console.error("shouldGoUp");
       drone.target = drone.getUpTarget();
-    } else if (
-      drone.isAtTarget() ||
-      isTypeBeenScanned ||
-      (drone.target && drone.target[1] >= 2500 && drone.creatureTarget.length === 0)
-    ) {
-      console.error("isAtTarget");
+    } else {
+      console.error("find next target");
       drone.target = drone.findNextTarget();
     }
 
     drone.debugInfo();
-    const shouldLight =
-      drone.battery >= 10 &&
-      !hasCreatureClosed &&
-      drone.zone.isInZone(drone.pos, 300);
-    const light = shouldLight ? 1 : 0;
 
+    // AVOID MONSTER
     if (drone.target && monstersInRadius.length > 0) {
-      //console.error("Monster visible", monstersInRadius);
-      // if (
-      //   monstersInRadius.some(
-      //     (monster) =>
-      //       monster.pos && calculateDistance(monster.pos, drone.pos) <= 500
-      //   )
-      // ) {
-      //   drone.target = drone.getUpTarget();
-      // }
-      //TODO
-      // for now just one monster
-      //const [nextMonsterX, nextMonsterY] =
-      // if (drone.target[1] === Y_TO_REGISTER) {
-      //   // is going up
-      // } else {
-      // is searching next target
-      // }
+      const nextPosition = drone.getNextPosition();
+      monstersInRadius.forEach((monster) => {
+        if (monster.willCollide(drone.pos, nextPosition)) {
+          console.error(`C EST LA MERDE ${monster.id}`);
+        }
+      });
     }
 
+    const light = drone.getLight(hasCreatureClosed);
     if (drone.target) {
-      console.log(`MOVE ${drone.target[0]} ${drone.target[1]} ${light}`);
+      const idsCreaturesTarget = drone.creatureTargets;
+      console.log(
+        `MOVE ${drone.target[0]} ${drone.target[1]} ${light} ${idsCreaturesTarget}`
+      );
     } else {
       console.log(`WAIT ${light}`);
     }
