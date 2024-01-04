@@ -8,8 +8,54 @@ const RADIUS_COLLISION = 500;
 const MIN_BORDER_MAP = 0;
 const MAX_BORDER_MAP = 9999;
 const FISH_SPEED = 200;
+const SCORE_BY_TYPE = [1, 2, 3];
+const NB_COLOR = 4;
+const NB_TYPES = 3;
 
 // seed monster down seed=-5177691760985842000
+
+const FirstFiveTurns = new Map([
+  [
+    0,
+    new Map([
+      [0, { X: 2756, Y: 3700, Light: false }],
+      [1, { X: 2659, Y: 3709, Light: false }],
+      [2, { X: 2629, Y: 3719, Light: false }],
+      [3, { X: 2624, Y: 3731, Light: true }],
+      [4, { X: 1597, Y: 6207, Light: false }],
+    ]),
+  ],
+  [
+    1,
+    new Map([
+      [0, { X: 7249, Y: 3701, Light: false }],
+      [1, { X: 7341, Y: 3709, Light: false }],
+      [2, { X: 7368, Y: 3719, Light: false }],
+      [3, { X: 7375, Y: 3731, Light: false }],
+      [4, { X: 7352, Y: 3917, Light: true }],
+    ]),
+  ],
+  [
+    2,
+    new Map([
+      [0, { X: 7271, Y: 3846, Light: false }],
+      [1, { X: 7256, Y: 3916, Light: false }],
+      [2, { X: 7197, Y: 3944, Light: false }],
+      [3, { X: 7119, Y: 3929, Light: false }],
+      [4, { X: 7108, Y: 4057, Light: true }],
+    ]),
+  ],
+  [
+    3,
+    new Map([
+      [0, { X: 2736, Y: 3849, Light: false }],
+      [1, { X: 2744, Y: 3916, Light: false }],
+      [2, { X: 2803, Y: 3944, Light: false }],
+      [3, { X: 2881, Y: 3929, Light: true }],
+      [4, { X: 2540, Y: 4554, Light: false }],
+    ]),
+  ],
+]);
 
 function calculateDistance(point1: Point, point2: Point) {
   const dx = point1[0] - point2[0];
@@ -47,6 +93,10 @@ function inRange(p1: Point, p2: Point, radius: number) {
   return (x2 - x) * (x2 - x) + (y2 - y) * (y2 - y) <= radius * radius;
 }
 
+function inMap([x, y]: Point): boolean {
+  return x >= 0 && x <= MAX_BORDER_MAP && y >= 0 && y <= MAX_BORDER_MAP;
+}
+
 type Radar = "TR" | "TL" | "BL" | "BR";
 type CreatureStatus = "registered" | "scanned" | "deleted" | "available";
 type CreatureInfo = {
@@ -56,6 +106,15 @@ type CreatureInfo = {
   droneClosest: number;
 };
 type Point = [number, number];
+type ScoreBonusCount = Record<
+  number,
+  { scannedOrRegister: number; isScannedByFoe: boolean }
+>;
+type ScoreCount = {
+  scoreScanned: number;
+  typeBonusCount: ScoreBonusCount;
+  colorBonusCount: ScoreBonusCount;
+};
 
 class Creature {
   public id: number;
@@ -79,16 +138,14 @@ class Creature {
   }
 
   debug() {
-    console.error(`============================================`);
     console.error(
       `Creature id: ${this.id} pos: ${this.getEstimatedPosition()} rangeX ${
         this.rangeX
       } rangeY ${this.rangeY}`
     );
-    console.error(`============================================\n`);
   }
 
-  updateWithCoordinate(pos: Point, speed) {
+  updateWithCoordinate(pos: Point, speed: Point) {
     this.pos = pos;
     const [x, y] = pos;
     this.rangeX = [x, x];
@@ -122,8 +179,14 @@ class Creature {
   addSpeedToRange() {
     const [xmin, xmax] = this.rangeX;
     const [ymin, ymax] = this.rangeY;
-    this.rangeX = [xmin - FISH_SPEED, xmax + FISH_SPEED];
-    this.rangeY = [ymin - FISH_SPEED, ymax + FISH_SPEED];
+    this.rangeX = [
+      Math.max(xmin - FISH_SPEED, MIN_BORDER_MAP),
+      Math.min(xmax + FISH_SPEED, MAX_BORDER_MAP),
+    ];
+    this.rangeY = [
+      Math.max(ymin - FISH_SPEED, MIN_BORDER_MAP),
+      Math.min(ymax + FISH_SPEED, MAX_BORDER_MAP),
+    ];
   }
 
   getEstimatedPosition(): Point {
@@ -190,51 +253,11 @@ class Creature {
 
     return true;
   }
-}
 
-class Game {
-  public static type: number = 0;
-  public static rangeY: Point[] = [
-    [2500, 5000],
-    [5000, 7500],
-    [7500, 10000],
-  ];
-  public static fishes: Creature[] = [];
-  public static monsters: Creature[] = [];
-  public static myDrones: Drone[] = [];
-  public static targetsAvailable: CreatureInfo[] = [];
-
-  public static computeTargetsAvailable(): void {
-    Game.targetsAvailable = Game.fishes
-      .reduce<CreatureInfo[]>((acc, creature) => {
-        if (creature.status === "available") {
-          const pos = creature.getEstimatedPosition();
-          const droneClosest =
-            calculateDistance(Game.myDrones[0].pos, pos) <
-            calculateDistance(Game.myDrones[1].pos, pos)
-              ? Game.myDrones[0].id
-              : Game.myDrones[1].id;
-          acc.push({
-            id: creature.id,
-            type: creature.type,
-            droneClosest, // TODO use or remove
-            pos,
-          });
-        }
-        return acc;
-      }, [])
-      .sort((a, b) => a.pos[0] - b.pos[0])
-      .sort((a, b) => a.type - b.type);
-  }
-
-  public static removeTargetsAvailable(targets: number[]) {
-    Game.targetsAvailable = Game.targetsAvailable.filter(
-      (t) => !targets.includes(t.id)
-    );
-  }
-
-  public static getFish(creatureId: number): Creature | undefined {
-    return Game.fishes.find(({ id }) => id === creatureId);
+  getScore() {
+    return this.isScannedByFoe
+      ? SCORE_BY_TYPE[this.type]
+      : SCORE_BY_TYPE[this.type] * 2;
   }
 }
 
@@ -272,19 +295,6 @@ class Drone {
   }
 
   getLight(): number {
-    const isAroundCreatureTarget = this.creatureTargets.some((creatureId) => {
-      const matchingCreature = Game.getFish(creatureId);
-      if (matchingCreature) {
-        return (
-          calculateDistance(
-            matchingCreature.getEstimatedPosition(),
-            this.pos
-          ) <= BIG_LIGHT_RADIUS
-        );
-      }
-      return false;
-    });
-
     const hasCreatureClosed = Game.fishes.some(
       ({ pos }) => !!pos && calculateDistance(pos, this.pos) <= 800
     );
@@ -293,7 +303,7 @@ class Drone {
       this.battery >= 5 &&
       !hasCreatureClosed &&
       this.coolDownLight <= 0 &&
-      isAroundCreatureTarget;
+      this.pos[1] >= 2500;
 
     if (shouldLight) {
       this.coolDownLight = 2;
@@ -368,9 +378,8 @@ class Drone {
         (t) => t.type === type
       );
       const maxCreatureForDrone = Math.round(
-        Game.fishes.filter(
-          (f) => f.status === "available" && f.type === Game.type
-        ).length / 2
+        Game.fishes.filter((f) => f.status === "available" && f.type === type)
+          .length / 2
       );
       while (
         this.creatureTargets.length < maxCreatureForDrone &&
@@ -384,6 +393,187 @@ class Drone {
       }
       type++;
     }
+  }
+
+  avoidMonster() {
+    const monstersInRadius = Game.monsters.filter((monster) => !!monster.pos);
+    const nextTarget = this.target ?? [
+      this.pos[0],
+      Math.min(this.pos[1] + 300, MAX_BORDER_MAP),
+    ];
+    if (monstersInRadius.length > 0) {
+      const speed = this.getSpeed(nextTarget);
+      const allPossiblePosition: Point[] = [];
+
+      monstersInRadius.forEach((monster) => {
+        if (monster.willCollide(this.pos, speed)) {
+          console.error(`IF FOLLOW TARGET WILL COLLIDE WITH ${monster.id}`);
+          const t = 0.1;
+          for (let i = 0; i <= 2 * Math.PI; i += t) {
+            const [vx, vy] = [
+              Math.round(Math.cos(i) * 600),
+              Math.round(Math.sin(i) * 600),
+            ];
+            const position: Point = [this.pos[0] + vx, this.pos[1] + vy];
+
+            const willCollide = monstersInRadius.some((m) =>
+              m.willCollide(this.pos, [vx, vy])
+            );
+            if (!willCollide && inMap(position)) {
+              allPossiblePosition.push(position);
+            }
+          }
+        }
+      });
+
+      const closestAvailablePositionFromTarget = allPossiblePosition.reduce<{
+        position: Point | null;
+        minDistance: number;
+      }>(
+        (acc, position) => {
+          const distance = calculateDistance(position, nextTarget);
+          if (distance < acc.minDistance) {
+            return {
+              position,
+              minDistance: distance,
+            };
+          }
+          return acc;
+        },
+        {
+          position: null,
+          minDistance: MAX_BORDER_MAP,
+        }
+      );
+
+      this.target = closestAvailablePositionFromTarget.position ?? nextTarget;
+    }
+  }
+
+  printMove() {
+    const light = this.getLight();
+    if (this.target) {
+      const log = this.creatureTargets;
+      const speed = this.getSpeed(this.target);
+      const [x, y]: Point = [this.pos[0] + speed[0], this.pos[1] + speed[1]];
+      console.error(`pos: ${this.pos} speed ${speed} ${[x, y]}`);
+      console.log(`MOVE ${x} ${y} ${light} ${log}`);
+    } else {
+      console.log(`WAIT ${light}`);
+    }
+  }
+}
+
+class Game {
+  public static type: number = 0;
+  public static rangeY: Point[] = [
+    [2500, 5000],
+    [5000, 7500],
+    [7500, MAX_BORDER_MAP],
+  ];
+  public static fishes: Creature[] = [];
+  public static monsters: Creature[] = [];
+  public static myDrones: Drone[] = [];
+  public static targetsAvailable: CreatureInfo[] = [];
+  public static round = 1;
+
+  public static computeTargetsAvailable(): void {
+    Game.targetsAvailable = Game.fishes
+      .reduce<CreatureInfo[]>((acc, creature) => {
+        if (creature.status === "available") {
+          const pos = creature.getEstimatedPosition();
+          const droneClosest =
+            calculateDistance(Game.myDrones[0].pos, pos) <
+            calculateDistance(Game.myDrones[1].pos, pos)
+              ? Game.myDrones[0].id
+              : Game.myDrones[1].id;
+          acc.push({
+            id: creature.id,
+            type: creature.type,
+            droneClosest, // TODO use or remove
+            pos,
+          });
+        }
+        return acc;
+      }, [])
+      .sort((a, b) => a.pos[0] - b.pos[0])
+      .sort((a, b) => a.type - b.type);
+  }
+
+  public static removeTargetsAvailable(targets: number[]) {
+    Game.targetsAvailable = Game.targetsAvailable.filter(
+      (t) => !targets.includes(t.id)
+    );
+  }
+
+  public static getFish(creatureId: number): Creature | undefined {
+    return Game.fishes.find(({ id }) => id === creatureId);
+  }
+
+  public static getScore(myScore: number) {
+    const { scoreScanned, colorBonusCount, typeBonusCount } =
+      Game.fishes.reduce<ScoreCount>(
+        (acc, f) => {
+          if (f.status === "scanned" || f.status === "registered") {
+            if (f.status === "scanned") {
+              acc.scoreScanned += f.getScore();
+            }
+
+            if (acc.typeBonusCount[f.type] === undefined) {
+              acc.typeBonusCount[f.type] = {
+                scannedOrRegister: 0,
+                isScannedByFoe: false,
+              };
+            }
+            acc.typeBonusCount[f.type].scannedOrRegister++;
+            acc.typeBonusCount[f.type].isScannedByFoe =
+              acc.typeBonusCount[f.type].isScannedByFoe || f.isScannedByFoe;
+
+            if (acc.colorBonusCount[f.color] === undefined) {
+              acc.colorBonusCount[f.color] = {
+                scannedOrRegister: 0,
+                isScannedByFoe: false,
+              };
+            }
+            acc.colorBonusCount[f.color].scannedOrRegister++;
+            acc.colorBonusCount[f.color].isScannedByFoe =
+              acc.colorBonusCount[f.color].isScannedByFoe || f.isScannedByFoe;
+          }
+          return acc;
+        },
+        {
+          scoreScanned: 0,
+          typeBonusCount: {},
+          colorBonusCount: {},
+        }
+      );
+
+    let score = myScore + scoreScanned;
+    for (let i = 0; i < NB_COLOR; i++) {
+      if (colorBonusCount[i] && colorBonusCount[i].scannedOrRegister === 3) {
+        score += colorBonusCount[i].isScannedByFoe ? 3 : 6;
+      }
+    }
+
+    for (let i = 0; i < NB_TYPES; i++) {
+      if (typeBonusCount[i] && typeBonusCount[i].scannedOrRegister === 3) {
+        score += typeBonusCount[i].isScannedByFoe ? 3 : 6;
+      }
+    }
+
+    return score;
+  }
+
+  public static endTurn() {
+    const isTypeBeenScanned = !Game.fishes.some(
+      (f) => f.status === "available" && f.type === Game.type
+    );
+    if (isTypeBeenScanned) {
+      Game.type = Game.type + 1;
+      console.error("isTypeBeenScanned change to type", Game.type);
+    }
+    Game.fishes.forEach((f) => f.addSpeedToRange());
+    Game.round++;
   }
 }
 
@@ -518,32 +708,33 @@ while (true) {
   }
 
   // END GET ALL DATA
-
   Game.computeTargetsAvailable();
 
   console.error(`==================== Monster =====================`);
-  Game.monsters.forEach((m) => console.error(`${m.id} pos: ${m.pos}`));
+  Game.monsters.forEach((m) =>
+    console.error(`${m.id} pos: ${m.pos} speed: ${m.speed}`)
+  );
   console.error(`============================================\n`);
 
-  const isTypeBeenScanned = !Game.fishes.some(
-    (f) => f.status === "available" && f.type === Game.type
-  );
+  const score = Game.getScore(myScore);
+  const hasFishAvailable = Game.fishes.some((f) => f.status === "available");
+
+  //
 
   // =============== FOR DRONE =====================
-  for (let i = 0; i < myDroneCount; i++) {
-    const drone = Game.myDrones[i];
-    const monstersInRadius = Game.monsters.filter((monster) => !!monster.pos);
-
+  Game.myDrones.forEach((drone) => {
     drone.computeCreatureTarget();
     Game.removeTargetsAvailable(drone.creatureTargets);
+  });
 
-    // DEBUG
-    Game.fishes.forEach(
-      (c) => drone.creatureTargets.includes(c.id) && c.debug()
-    );
+  Game.myDrones.sort((a, b) => a.id - b.id);
+
+  // PRINT
+  for (let i = 0; i < myDroneCount; i++) {
+    const drone = Game.myDrones[i];
 
     const shouldGoUp =
-      isTypeBeenScanned && drone.nbScanToRegister > 0 && Game.type >= 1; // TODO ESTIMATED SCORE 64 and some drone doesn't go up
+      (score >= 64 || !hasFishAvailable) && drone.nbScanToRegister > 0; // TODO ESTIMATED SCORE 64 and some drone doesn't go up
 
     if (shouldGoUp || (drone.isGoingUp() && !drone.isUp())) {
       console.error("GO UP");
@@ -552,73 +743,12 @@ while (true) {
       console.error("FIND NEXT TARGET");
       drone.target = drone.findNextTarget();
     }
+    drone.avoidMonster();
 
-    drone.debugInfo();
-
-    let log;
-    // AVOID MONSTER
-    if (drone.target && monstersInRadius.length > 0) {
-      const speed = drone.getSpeed(drone.target);
-      const allPossiblePosition: Point[] = [];
-      monstersInRadius.forEach((monster) => {
-        if (monster.willCollide(drone.pos, speed)) {
-          log = "willCollide";
-          console.error(`WILL COLLIDE WITH ${monster.id}`);
-          const t = 0.1;
-          for (let i = 0; i <= 2 * Math.PI; i += t) {
-            const [vx, vy] = [
-              Math.round(Math.sin(i) * 600),
-              Math.round(Math.cos(i) * 600),
-            ];
-            if (
-              !monstersInRadius.some((m) => m.willCollide(drone.pos, [vx, vy]))
-            ) {
-              allPossiblePosition.push([drone.pos[0] + vx, drone.pos[1] + vy]);
-            }
-          }
-        }
-      });
-
-      const closestAvailablePositionFromTarget = allPossiblePosition.reduce<{
-        position: Point | null;
-        minDistance: number;
-      }>(
-        (acc, position) => {
-          const distance = calculateDistance(position, drone.target!);
-          if (distance < acc.minDistance) {
-            return {
-              position,
-              minDistance: distance,
-            };
-          }
-          return acc;
-        },
-        {
-          position: null,
-          minDistance: MAX_BORDER_MAP,
-        }
-      );
-
-      drone.target =
-        closestAvailablePositionFromTarget.position ?? drone.target;
-    }
-
-    console.error(`============================================\n`);
-
-    const light = drone.getLight();
-    if (drone.target) {
-      log = log ?? drone.creatureTargets;
-      const speed = drone.getSpeed(drone.target);
-      const [x, y]: Point = [drone.pos[0] + speed[0], drone.pos[1] + speed[1]];
-      console.log(`MOVE ${x} ${y} ${light} ${log}`);
-    } else {
-      console.log(`WAIT ${light}`);
-    }
+    DEBUG && drone.debugInfo();
+    drone.printMove();
   }
 
-  if (isTypeBeenScanned) {
-    Game.type = Game.type + 1;
-    console.error("isTypeBeenScanned change to type", Game.type);
-  }
-  Game.fishes.forEach((f) => f.addSpeedToRange());
+  // END TURN
+  Game.endTurn();
 }
